@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+
 import os
 import re
 from pathlib import Path
@@ -17,7 +18,7 @@ from html import escape
 
 import shutil
 from collections import defaultdict
-    
+
 from excel_report import write_excel_report
 from html_report import generate_dashboard_html
 from exceptions_report import create_exceptions_report
@@ -38,6 +39,7 @@ class Config:
     DUPLICATES_DIR = OUTPUT_DIR / "Duplicates"
     INDIVIDUAL_FLATS_DIR = OUTPUT_DIR / "Individual Flats"
     NOT_MORELLO_DIR = OUTPUT_DIR / "Not Morello"
+    FAILED_DIR = OUTPUT_DIR / "Failed"
     DEBUG_DIR = BASE_DIR / "_debug"
 
     OUTPUT_XLSX = OUTPUT_DIR / "invoice_extraction.xlsx"
@@ -106,8 +108,8 @@ class RegexPatterns:
 
     AMOUNT_PRIORITIES = [
         ("total_incl_vat", r"\btotal\s*(?:[£$€])?\s*(?:incl\.?|inc\.?)\s*vat\b"),
-        ("total_inc_vat", r"\btotal\s*(?:[£$€])?\s*inc\.?\s*vat\b"),
-        ("total_including_vat", r"\btotal\s*(?:[£$€])?\s*including\s*vat\b"),
+        ("total_inc_vat", r"\btotal\s*(?:[£€])?\s*inc\.?\s*vat\b"),
+        ("total_including_vat", r"\btotal\s*(?:[£€])?\s*including\s*vat\b"),
         ("grand_total", r"\bgrand\s+total\b"), ("amount_due", r"\bamount\s+due\b"),
         ("balance_due", r"\bbalance\s+due\b"), ("invoice_total", r"\binvoice\s+total\b"), ("total", r"\btotal\b"),
     ]
@@ -123,16 +125,15 @@ class RegexPatterns:
         r"^Work Between\b", r"^Rounded\b", r"^Rounded upto\b", r"^Minutes\b",
         r"^Split due to charge rate boundary\b", r"^Please remit payments\b", r"^Page\s+\d+",
         r"^For finance queries\b", r"^For any urgent repairs\b", r"^Fax\b", r"^Email\b", r"^Customer Services\b",
-        
-        # --- NEW: Switch2 Boilerplate & Page Break text ---
-        r"^Switch2'?s\s+terms\b", r"^Registered\s+Office\b", r"^Sales\s+Invoice\b", r"^INVOICE\s+TO",
+
+        # --- Switch2 Boilerplate & Page Break text ---
+        r"^Switch2'?\s+terms\b", r"^Registered\s+Office\b", r"^Sales\s+Invoice\b", r"^INVOICE\s+TO",
         r"^MORELLO\s+QUARTER\b", r"^All\s+correspondence\b", r"^Brandon\s+Schmidt\b",
         r"^C/o\s+Rendall\b", r"^Portsoken\s+House\b", r"^\d+/\d+\s+Minories\b", r"^London\s+EC3N\b",
         r"^Great\s+Britain\b", r"^Switch2\s+Energy\b", r"^The\s+Waterfront\b", r"^Salts\s+Mill\b",
         r"^Shipley\b", r"^West\s+Yorkshire\b", r"^BD17\s+7EZ\b", r"^Bill-to\s+Customer\b",
         r"^Document\s+Date\b", r"^Due\s+Date\b", r"^VAT\s+Registration\b", r"^Bank\s+Barclays\b",
-        
-        # --- NEW: Short Location/Section Headers ---
+        # --- Short Location/Section Headers ---
         r"^Heat\s*$", r"^Roof\s*\d+\s*$"
     ]
     LINE_ITEM_SUMMARY = [
@@ -196,7 +197,7 @@ class RegexPatterns:
         re.compile(r"\bactuators?\b", re.I),
     ]
 
-    # --- NEW: Isolated Dosing Categories ---
+    # --- Isolated Dosing Categories ---
     DOSING_MARKERS = [
         re.compile(r"\bdosing\b", re.I),
         re.compile(r"\bdose\b", re.I),
@@ -315,7 +316,7 @@ def candidate_credit_numbers(lines):
             continue
         same_line = re.search(RegexPatterns.CREDIT_STRICT_LABEL + r"\s*[:.\-]?\s*(" + RegexPatterns.DOCNO_VALUE + r")", line, re.I)
         next_line = lines[i + 1] if i + 1 < len(lines) else ""
-        
+
         if same_line:
             candidates.append({"value": same_line.group(1)})
         elif next_match := re.search(r"^" + RegexPatterns.DOCNO_VALUE + r"$", next_line.strip(), re.I):
@@ -346,7 +347,7 @@ def candidate_dates(lines):
         value = same_line.group(0) if same_line else (next_match.group(0) if next_match else "")
         if value:
             candidates.append({
-                "anchor_line": line, 
+                "anchor_line": line,
                 "value": re.sub(r"^(\d{1,2})\.\s+", r"\1 ", value.strip())
             })
     return candidates
@@ -386,12 +387,12 @@ def candidate_detail_blocks(lines):
                 nxt = re.sub(r"\s+", " ", (lines[j] or "")).strip()
                 if nxt and any(re.search(p, nxt.lower(), re.I) for p in RegexPatterns.DETAIL_STOPS):
                     break
-                if nxt: 
+                if nxt:
                     block.append(nxt)
                 j += 1
             if block:
                 candidates.append({"value": "\n".join(block).strip()})
-            i = j 
+            i = j
         else:
             i += 1
     return candidates
@@ -402,13 +403,13 @@ def pick_best_detail(candidates):
         if not (value := (c.get("value") or "").strip()): continue
         for ln in [x for x in value.splitlines() if x.strip()]:
             low = ln.strip().lower()
-            if low in {"charges", "charge", "description", "detail", "item detail", "price"}: 
+            if low in {"charges", "charge", "description", "detail", "item detail", "price"}:
                 continue
             if any(re.search(p, low, re.I) for p in RegexPatterns.DETAIL_HEADERS):
                 continue
-            if re.fullmatch(r"\d{2}/\d{2}/\d{2,4}", low): 
+            if re.fullmatch(r"\d{2}/\d{2}/\d{2,4}", low):
                 continue
-            if re.search(r"^(qty|quantity|unit|unit price|price|value|vat rate|vat identifier|discount %|receipt date|measure)$", low, re.I): 
+            if re.search(r"^(qty|quantity|unit|unit price|price|value|vat rate|vat identifier|discount %|receipt date|measure)$", low, re.I):
                 continue
             clean_line = re.sub(r"^([A-Za-z0-9.-]+)\s{3,}", "", ln.lstrip()).strip()
             if clean_line:
@@ -469,10 +470,10 @@ def extract_line_items(detail_text: str):
         return True
 
     SPLIT_ANCHORS = [
-        # --- FIXED: explicitly checks for both, and refuses to split them apart ---
+        # FIXED: explicitly checks for both, and refuses to split them apart
         r"(?=Plant\s+Planned\s+Preventative\s+Maintenance)",
         r"(?<!Plant\s)(?=Planned\s+Preventative\s+Maintenance)",
-        
+
         r"(?=Prepayment\s+Services,\s*Incontro)",
         r"(?=Response\s+Maintenance\s+Services)",
         r"(?=Credit\s+Billing\s+Services)",
@@ -580,7 +581,7 @@ def debug_dump(pdf_path, parsed, text_pdf="", text_ocr="", chosen_source=""):
         for k in ['invoice_number', 'credit_number', 'invoice_date', 'invoice_amount']:
             f.write(f"{k}: {parsed.get(k, '')}\n")
         f.write(f"\n{'='*80}\nDETAIL\n{'='*80}\n{parsed.get('detail', '')}\n")
-        
+
         line_items = extract_line_items(parsed.get("detail", ""))
         line_sum, vat_sum = 0.0, 0.0
         f.write(f"\n{'='*80}\nLINE ITEMS FROM DETAIL\n{'='*80}\n")
@@ -591,13 +592,14 @@ def debug_dump(pdf_path, parsed, text_pdf="", text_ocr="", chosen_source=""):
                 line_sum += amt
                 vat_sum += round(amt * 0.20, 2)
             except ValueError: pass
-            
+
         f.write(f"\n{'='*80}\nTOTAL CHECK\n{'='*80}\n")
         f.write(f"line_amount_sum: {line_sum:.2f}\nvat_amount_sum: {vat_sum:.2f}\ncalculated_total: {line_sum + vat_sum:.2f}\ninvoice_amount: {parsed.get('invoice_amount', '')}\n")
         f.write(f"\n{'='*80}\nLINES_REF\n{'='*80}\n")
         for i, line in enumerate(parsed.get("lines_ref", []), 1): f.write(f"{i:04d}: {line}\n")
         if text_pdf: f.write(f"\n{'='*80}\nRAW PDF TEXT\n{'='*80}\n{text_pdf}\n")
         if text_ocr: f.write(f"\n{'='*80}\nRAW OCR TEXT\n{'='*80}\n{text_ocr}\n")
+
 
 def extract_and_parse(pdf_path: Path):
     text_pdf = extract_text_pdf(pdf_path)
@@ -686,7 +688,7 @@ def process_pdf(pdf_path_str: str):
                     "line_total": "",
                     "line_index": idx
                 }
-                
+
                 desc_lower = item["line_description"].lower()
 
                 if is_not_morello or has_any(RegexPatterns.NOT_MORELLO_MARKERS, desc_lower):
@@ -695,7 +697,7 @@ def process_pdf(pdf_path_str: str):
                 else:
                     row["is_not_morello_file"] = False
 
-                    # 1. STRICT LINE-LEVEL EXCEPTIONS 
+                    # 1. STRICT LINE-LEVEL EXCEPTIONS
                     # Contract phrases and specific tasks always take priority
                     if "preventative" in desc_lower:
                         row["category"] = "Preventative"
@@ -707,15 +709,15 @@ def process_pdf(pdf_path_str: str):
                         row["in_scope"] = "N"
                     elif has_any(RegexPatterns.DOSING_MARKERS, desc_lower):
                         row["category"] = "Dosing"
-                        
+
                     # 2. GLOBAL JOB SHEET INHERITANCE
-                    # If the invoice header specifies a location ("Flat 41" or "Energy Centre"), 
+                    # If the invoice header specifies a location ("Flat 41" or "Energy Centre"),
                     # generic line items (like Time Charges or parts) inherit that location.
                     elif global_category:
                         row["category"] = global_category
-                        
+
                     # 3. LINE-LEVEL FALLBACKS FOR MIXED INVOICES
-                    # If there's no global header location (e.g. Schedule/Contract invoice), 
+                    # If there's no global header location (e.g. Schedule/Contract invoice),
                     # evaluate the physical markers directly on the line item.
                     elif has_any(RegexPatterns.BOILER_MARKERS, desc_lower):
                         row["category"] = "Boiler"
@@ -780,9 +782,10 @@ def ensure_output_dirs():
     Config.DUPLICATES_DIR.mkdir(parents=True, exist_ok=True)
     Config.INDIVIDUAL_FLATS_DIR.mkdir(parents=True, exist_ok=True)
     Config.NOT_MORELLO_DIR.mkdir(parents=True, exist_ok=True)
+    Config.FAILED_DIR.mkdir(parents=True, exist_ok=True)
 
 def safe_filename(name: str) -> str:
-    return re.sub(r'[<>:"/\\\\|?*]+', "_", name).strip()
+    return re.sub(r'[<>:"/\\|?*]+', "_", name).strip()
 
 def unique_destination_path(dest_dir: Path, filename: str) -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -808,6 +811,7 @@ def copy_pdf_to_output(source_rel_path: str, category: str, row: dict | None = N
     source_path = Config.BASE_DIR / source_rel_path
     if category == "duplicate": dest_dir = Config.DUPLICATES_DIR
     elif category == "not_morello": dest_dir = Config.NOT_MORELLO_DIR
+    elif category == "failed": dest_dir = Config.FAILED_DIR
     elif category == "flat": dest_dir = Config.INDIVIDUAL_FLATS_DIR / invoice_year_from_row(row or {}) / detect_flat_site((row or {}).get("detail", ""))
     else: dest_dir = Config.OUTPUT_DIR / invoice_year_from_row(row or {})
     dest_path = unique_destination_path(dest_dir, source_path.name)
@@ -815,7 +819,7 @@ def copy_pdf_to_output(source_rel_path: str, category: str, row: dict | None = N
     return str(dest_path.relative_to(Config.OUTPUT_DIR))
 
 def make_html_link(rel_to_output: str) -> str:
-    return f'<a href="{escape(rel_to_output).replace("\\\\", "/")}" target="_blank">{escape(rel_to_output)}</a>'
+    return f'<a href="{escape(rel_to_output).replace("\\", "/")}" target="_blank">{escape(rel_to_output)}</a>'
 
 
 # =============================================================================
@@ -826,7 +830,7 @@ def main():
     clear_output_directory()
     ensure_output_dirs()
 
-    pdfs = sorted(Config.INPUT_DIR.rglob("*.pdf"))
+    pdfs = sorted(Config.INPUT_DIR.rglob("*.[pP][dD][fF]"))
     if not pdfs:
         print(f"No PDFs found in {Config.INPUT_DIR}")
         return
@@ -835,17 +839,38 @@ def main():
     duplicate_invoice_groups, seen_invoice_keys = {}, {}
     error_files, missing_data_files = [], []
     kept_results, flat_results, duplicate_results, not_morello_results = [], [], [], []
+    failed_files = []  # rel_paths of PDFs that could not be processed
+
+    # =========================================================================
+    # FIX: Reconciliation counters — track every input PDF so none disappear.
+    # =========================================================================
+    total_input = len(pdfs)
+    processed_count = 0
+    failed_count = 0
+    duplicate_count = 0
+    classified_count = 0
 
     with ProcessPoolExecutor(max_workers=min(Config.MAX_WORKERS, len(unique_pdfs))) as executor:
         futures = {executor.submit(process_pdf, str(pdf)): pdf for pdf in unique_pdfs}
         for future in as_completed(futures):
             result = future.result()
+
             if result["error"]:
                 print(f"Failed: {result['pdf']} -> {result['error']}")
                 error_files.append({"pdf": result["pdf"], "error": result["error"]})
+                failed_files.append(result["pdf"])
+                failed_count += 1
                 continue
+
             if not result.get("rows"):
-                print(f"Processed: {result['pdf']} (no rows)")
+                # No exception was raised, but nothing was extracted at all
+                # (e.g. blank scan, OCR returned nothing). Treat as failed so it
+                # is visible and moved to Output/Failed instead of disappearing.
+                reason = "No text/rows extracted from PDF (empty or unreadable content)"
+                print(f"Failed: {result['pdf']} -> {reason}")
+                error_files.append({"pdf": result["pdf"], "error": reason})
+                failed_files.append(result["pdf"])
+                failed_count += 1
                 continue
 
             first_row = result["rows"][0]
@@ -855,64 +880,134 @@ def main():
                 (first_row.get("invoice_amount") or "").strip(),
             )
 
-            if invoice_key[1] and invoice_key[2]:
+            # =================================================================
+            # FIX: Check data quality BEFORE duplicate detection.
+            #
+            # The original code checked for invoice-key duplicates whenever
+            # invoice_number and invoice_amount were both non-empty, WITHOUT
+            # verifying that the extraction was actually good. When multiple
+            # PDFs had bad extractions that produced the same wrong
+            # invoice_number + invoice_amount (e.g. from common boilerplate
+            # text, footers, or OCR artifacts), they were silently treated as
+            # duplicates and sent to the Duplicates folder — never appearing
+            # in the main output or in Failed.
+            #
+            # Now: if the PDF has ANY missing critical fields, we skip the
+            # duplicate check entirely. The PDF falls through to normal
+            # classification and appears in the output with its missing data
+            # flagged in the exceptions report.
+            #
+            # This ensures every input PDF is accounted for in the output.
+            # =================================================================
+            if result.get("missing_fields"):
+                # Extraction is incomplete — do NOT treat this as a duplicate
+                # candidate even if invoice_number/amount happen to match.
+                # Fall through to normal classification below.
+                pass
+            elif invoice_key[1] and invoice_key[2]:
                 if invoice_key in seen_invoice_keys:
                     group_key = f"{invoice_key[0]} | {invoice_key[1]} | {invoice_key[2]}"
                     if group_key not in duplicate_invoice_groups:
                         duplicate_invoice_groups[group_key] = {"key": group_key, "kept": seen_invoice_keys[invoice_key]["pdf"], "discarded": []}
                     duplicate_invoice_groups[group_key]["discarded"].append(result["pdf"])
                     duplicate_results.append(result)
+                    duplicate_count += 1
                     print(f"Skipped duplicate invoice: {result['pdf']}")
                     continue
                 seen_invoice_keys[invoice_key] = result
 
             if any(r.get("is_not_morello_file") for r in result["rows"]):
                 not_morello_results.append(result)
+                classified_count += 1
                 print(f"Classified as Outside Site (Not Morello): {result['pdf']}")
             elif is_flat_visit_result(result):
                 flat_results.append(result)
+                classified_count += 1
                 print(f"Classified as Individual Flat: {result['pdf']}")
             else:
                 kept_results.append(result)
+                classified_count += 1
 
             if result.get("missing_fields"):
                 missing_data_files.append({"pdf": result["pdf"], "missing": result["missing_fields"]})
+            processed_count += 1
             print(f"Processed: {result['pdf']}")
 
-    output_path_map = {}
-    for result in kept_results:
-        output_rel = copy_pdf_to_output(result["pdf"], "kept", result["rows"][0])
-        output_path_map[result["pdf"]] = output_rel
-        for r in result["rows"]: r["file"] = output_rel
+        # =========================================================================
+        # FIX: Reconciliation print — verify every input PDF is accounted for.
+        # =========================================================================
+        filename_dup_count = sum(len(g["discarded"]) for g in duplicate_filename_groups.values())
+        total_accounted = (
+            classified_count
+            + failed_count
+            + duplicate_count
+            + filename_dup_count
+        )
+        print(f"\n{'='*60}")
+        print(f"RECONCILIATION")
+        print(f"{'='*60}")
+        print(f"  Total input PDFs:              {total_input}")
+        print(f"  Filename duplicates (to Dup):   {filename_dup_count}")
+        print(f"  Unique PDFs processed:          {len(unique_pdfs)}")
+        print(f"    - Classified (output):       {classified_count}")
+        print(f"    - Invoice-key dups (to Dup):  {duplicate_count}")
+        print(f"    - Failed (to Failed):         {failed_count}")
+        print(f"  Total accounted for:            {total_accounted + filename_dup_count}")
+        if total_accounted + filename_dup_count != total_input:
+            print(f"  *** WARNING: MISMATCH! {total_input - total_accounted - filename_dup_count} PDFs unaccounted for! ***")
+        print(f"{'='*60}\n")
 
-    for result in flat_results:
-        output_rel = copy_pdf_to_output(result["pdf"], "flat", result["rows"][0])
-        output_path_map[result["pdf"]] = output_rel
-        for r in result["rows"]: r["file"] = output_rel
+        output_path_map = {}
+        for result in kept_results:
+            output_rel = copy_pdf_to_output(result["pdf"], "kept", result["rows"][0])
+            output_path_map[result["pdf"]] = output_rel
+            for r in result["rows"]: r["file"] = output_rel
 
-    for result in not_morello_results:
-        output_rel = copy_pdf_to_output(result["pdf"], "not_morello", result["rows"][0])
-        output_path_map[result["pdf"]] = output_rel
-        for r in result["rows"]: r["file"] = output_rel
+        for result in flat_results:
+            output_rel = copy_pdf_to_output(result["pdf"], "flat", result["rows"][0])
+            output_path_map[result["pdf"]] = output_rel
+            for r in result["rows"]: r["file"] = output_rel
 
-    for result in duplicate_results:
-        output_path_map[result["pdf"]] = copy_pdf_to_output(result["pdf"], "duplicate")
+        for result in not_morello_results:
+            output_rel = copy_pdf_to_output(result["pdf"], "not_morello", result["rows"][0])
+            output_path_map[result["pdf"]] = output_rel
+            for r in result["rows"]: r["file"] = output_rel
 
-    for g in [duplicate_filename_groups, duplicate_invoice_groups]:
-        for k, group in g.items():
-            group["kept"] = output_path_map.get(group["kept"], group["kept"])
-            group["discarded"] = [output_path_map.get(x, x) for x in group["discarded"]]
+        for result in duplicate_results:
+            output_path_map[result["pdf"]] = copy_pdf_to_output(result["pdf"], "duplicate")
 
-    for item in error_files + missing_data_files:
-        item["pdf"] = output_path_map.get(item["pdf"], item["pdf"])
+        # --- Move filename duplicates into Output/Duplicates ---
+        for group in duplicate_filename_groups.values():
+            for discarded_pdf in group["discarded"]:
+                try:
+                    output_path_map[discarded_pdf] = copy_pdf_to_output(discarded_pdf, "duplicate")
+                    print(f"Moved filename duplicate to Duplicates folder: {discarded_pdf}")
+                except Exception as e:
+                    print(f"Warning: could not move filename duplicate {discarded_pdf}: {e}")
 
-    rows = []
-    for res in [kept_results, flat_results, not_morello_results]:
-        for r in res: rows.extend(r["rows"])
+        # --- Move failed PDFs into Output/Failed ---
+        for rel_path in failed_files:
+            try:
+                output_path_map[rel_path] = copy_pdf_to_output(rel_path, "failed")
+                print(f"Moved failed PDF to Failed folder: {rel_path}")
+            except Exception as e:
+                print(f"Warning: could not move failed PDF {rel_path} to Failed folder: {e}")
+
+        for g in [duplicate_filename_groups, duplicate_invoice_groups]:
+            for k, group in g.items():
+                group["kept"] = output_path_map.get(group["kept"], group["kept"])
+                group["discarded"] = [output_path_map.get(x, x) for x in group["discarded"]]
+
+        for item in error_files + missing_data_files:
+            item["pdf"] = output_path_map.get(item["pdf"], item["pdf"])
+
+        rows = []
+        for res in [kept_results, flat_results, not_morello_results]:
+            for r in res: rows.extend(r["rows"])
 
     if rows:
         df = pd.DataFrame(rows)
-        
+
         final_cols = [
             "file", "document_type", "invoice_date", "invoice_number",
             "credit_number", "invoice_amount", "detail", "line_description", "category",
