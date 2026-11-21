@@ -10,18 +10,13 @@ import pdfplumber
 import pytesseract
 from pdf2image import convert_from_path
 
-from openpyxl.styles import Alignment, Font
-from openpyxl.utils import get_column_letter
-
-from html import escape
-
 # =============================================================================
 # 1. CONFIGURATION & CONSTANTS
 # =============================================================================
 
 class Config:
     BASE_DIR = Path(__file__).resolve().parent
-    OUTPUT_XLSX = BASE_DIR / "final_invoice_extraction.xlsx"
+    OUTPUT_FILE = BASE_DIR / "final_invoice_extraction.csv"
     OUTPUT_HTML = BASE_DIR / "final_invoice_extraction.html"
     EXCEPTIONS_HTML = BASE_DIR / "extraction_exceptions.html"
     DEBUG_DIR = BASE_DIR / "_debug"
@@ -126,104 +121,7 @@ class RegexPatterns:
         ("credit_label", CREDIT_STRICT_LABEL),
         ("line_items", r"(item detail quantity unit line value|detail quantity unit line value|detail quantity line value|no\.\s+description|^[\W_]*detail[\W_]*$|^[\W_]*description[\W_]*$|^[\W_]*charges[\W_]*$)"),
     ]
-    # Detail Subtype Patterns
 
-    # Core "job sheet" family:
-    # e.g. "Job Number 953157 Flat 10 Amarelle Apartments"
-    #      "Job Number 914452 Plant Room Morello"
-    #      "Job Number 2000613 Morello Energy Centre"
-    JOB_SHEET_PRIMARY_MARKERS = [
-        r"^\s*job\s+number\s+\d{4,}\s+\S.+$",
-        r"\binitial\s+call\s+type\b",
-        r"\battended\b",
-        r"\btime\s+charges\b",
-    ]
-
-    # Common supporting markers for engineer/job-sheet detail
-    JOB_SHEET_SUPPORT_MARKERS = [
-        r"\bcaller\s+name\b",
-        r"\bcall\s+notes\b",
-        r"\bappointment\b",
-        r"\bagreed\s+with\b",
-        r"\btime\s+details\b",
-        r"\btravel\s+between\b",
-        r"\bwork\s+between\b",
-        r"\brounded(?:\s+upto|\s+up\s+to)?\b",
-        r"\bsplit\s+due\s+to\s+charge\s+rate\s+boundary\b",
-        r"\bengineer\s+comments\b",
-        r"\btime\s+charge\s*\(",
-    ]
-
-    # Larger / more complex engineer report variant that you want separate
-    COMPLEX_JOB_SHEET_MARKERS = [
-        r"\btravel\s+between\b",
-        r"\bwork\s+between\b",
-        r"\btime\s+details\b",
-        r"\bsplit\s+due\s+to\s+charge\s+rate\s+boundary\b",
-        r"\busing\s+nearest\s+30\b",
-    ]
-
-    # Contract / periodic billing family
-    CONTRACT_SUMMARY_MARKERS = [
-        r"^\s*covering\b",
-        r"\bannual\s+contract\s+value\b",
-        r"\bannual\s+fee\b",
-        r"\bper\s+unit\s+per\s+month\b",
-        r"\bcontract\s+energy\s+management\b",
-        r"\bresponse\s+maintenance\s+services\b",
-        r"\bplanned\s+preventative\s+maintenance\b",
-        r"\bmanagement,\s*data\s*&\s*credit\s+billing\s+services\b",
-        r"\bsite\s*-\s*",
-    ]
-
-# NEW: Location & Sub-system Identifiers
-    FLAT_MARKERS = [
-        # Generic markers
-        r"\bflat\s+\d+", r"\bapt\s+\d+", r"\bapartment\b", 
-        r"\bunit\s+\d+", r"\bhouse\s+\d+", r"\bplot\s+\d+", r"\bblock\b",
-        
-        # Specific Building Names
-        r"\bamarelle\b", r"\bsatina\b", r"\bsantina\b", r"\brainier\b", r"\bmaraschino\b"
-    ]
-    
-    # 1. Undeniable Plant Locations
-    PLANT_LOCATION_MARKERS = [
-        r"\benergy\s+centre\b", r"\bplant\s+room\b", r"\bmain\s+plant\b",
-        r"\bcommunal\b", r"\bheat\s+station\b"
-    ]
-
-    # 2. Equipment that could be Plant OR Flat depending on context
-    PLANT_EQUIPMENT_MARKERS = [
-        r"\bboiler(?:s|room)?\b", r"\bpumps?\b", r"\bbms\s+panel\b", 
-        r"\bspill\s*(?:&|and)\s*fill\b", r"\bplant\s+failure\b", r"\bplant\s+leak\b"
-    ]
-
-    # FIX: Removed generic "pipe/pipework" to prevent Engineer Comments from 
-    # hijacking the classification. Now strictly looks for heavy pipe fittings.
-    PIPEWORK_MARKERS = [
-        r"\bmapress\b", r"\bcarbon\s+pipe\b", r"\bsteel\s+pipe\b", 
-        r"\bcopper\s+pipe\b", r"\bcoupling\b", r"\breducer\b", r"\btee\b"
-    ]
-
-    # Fuel and Commodity Markers
-    FUEL_MARKERS = [
-        r"\bfuel\s+delivery\b", r"\bfuel\s+supply\b", r"\boil\s+delivery\b",
-        r"\bred\s+diesel\b", r"\bbulk\s+fuel\b", r"\bgenerator\s+fuel\b"
-    ]
-
-# 1. Primary Plant Markers (Undeniable central infrastructure)
-    PLANT_PRIMARY_MARKERS = [
-        r"\benergy\s+centre\b", r"\bplant\s+room\b", r"\bmain\s+plant\b",
-        r"\bcommunal\b", r"\bheat\s+station\b", r"\bboiler(?:s|room|house)?\b"
-    ]
-
-    # 2. Secondary Plant Equipment (Could be flat or plant depending on context)
-    # FIX: Moved valves and actuators here so they don't trigger the heavy Pipework override
-    PLANT_SECONDARY_MARKERS = [
-        r"\bpumps?\b", r"\bbms\s+panel\b", r"\bspill\s*(?:&|and)\s*fill\b", 
-        r"\bplant\s+failure\b", r"\bplant\s+leak\b", r"\bplant\s+fault\b",
-        r"\bvalve(?:s)?\b", r"\bactuator(?:s)?\b" 
-    ]
 
 # =============================================================================
 # 2. TEXT EXTRACTION & CLEANING
@@ -376,32 +274,75 @@ def candidate_amounts(lines):
 def candidate_detail_blocks(lines):
     candidates = []
     i = 0
+
     while i < len(lines):
         line = (lines[i] or "").strip()
         clean_line = re.sub(r"\s+", " ", line)
-        
-        # If we find a detail header, start capturing the block
-        if any(re.search(p, clean_line.lower(), re.I) for p in RegexPatterns.DETAIL_HEADERS):
+
+        header_match = next(
+            (p for p in RegexPatterns.DETAIL_HEADERS
+             if re.search(p, clean_line.lower(), re.I)),
+            None
+        )
+
+        if header_match:
             block = []
             j = i + 1
+
+            stop_pattern = None
+            stop_line = None
+
             while j < len(lines):
                 nxt = re.sub(r"\s+", " ", (lines[j] or "")).strip()
-                # Stop capturing if we hit a footer / total / page break
-                if nxt and any(re.search(p, nxt.lower(), re.I) for p in RegexPatterns.DETAIL_STOPS):
+
+                stop_pattern = next(
+                    (p for p in RegexPatterns.DETAIL_STOPS
+                     if nxt and re.search(p, nxt.lower(), re.I)),
+                    None
+                )
+
+                if stop_pattern:
+                    stop_line = nxt
                     break
-                if nxt: 
+
+                if nxt:
                     block.append(nxt)
+
                 j += 1
-            
+
             if block:
-                candidates.append({"value": "\n".join(block).strip()})
-                
-            # Skip 'i' past the block we just processed so we don't overlap, 
-            # then continue scanning the rest of the document for page 2, page 3, etc.
-            i = j 
+                candidates.append({
+                    "value": "\n".join(block).strip()
+                })
+
+                # DEBUG
+                print("\n" + "=" * 80)
+                print(f"DETAIL BLOCK #{len(candidates)}")
+                print("=" * 80)
+                print(f"HEADER MATCH : {header_match}")
+                print(f"START LINE   : {i + 1}")
+
+                if stop_pattern:
+                    print(f"STOP PATTERN : {stop_pattern}")
+                    print(f"STOP LINE    : {stop_line}")
+                    print(f"STOP INDEX   : {j + 1}")
+                else:
+                    print("STOP PATTERN : <EOF>")
+
+                print(f"LINES CAPTURED: {len(block)}")
+
+                print("\nFIRST 5 LINES:")
+                for ln in block[:5]:
+                    print(f"  {ln}")
+
+                print("\nLAST 5 LINES:")
+                for ln in block[-5:]:
+                    print(f"  {ln}")
+
+            i = j
         else:
             i += 1
-            
+
     return candidates
 
 def pick_best_detail(candidates):
@@ -567,102 +508,6 @@ def anchor_flags(lines):
             flags.append(name)
     return sorted(flags)
 
-def detail_layout_flags(detail_text: str):
-    lines = [ln.strip() for ln in (detail_text or "").splitlines() if ln.strip()]
-    text = "\n".join(lines).lower()
-    flags = []
-
-    primary_map = {
-        "job_number_line": r"^\s*job\s+number\s+\d{4,}\s+\S.+$",
-        "initial_call_type": r"\binitial\s+call\s+type\b",
-        "attended": r"\battended\b",
-        "time_charges": r"\btime\s+charges\b",
-    }
-
-    support_map = {
-        "caller_name": r"\bcaller\s+name\b",
-        "call_notes": r"\bcall\s+notes\b",
-        "appointment": r"\bappointment\b",
-        "agreed_with": r"\bagreed\s+with\b",
-        "time_details": r"\btime\s+details\b",
-        "travel_between": r"\btravel\s+between\b",
-        "work_between": r"\bwork\s+between\b",
-        "rounded": r"\brounded(?:\s+upto|\s+up\s+to)?\b",
-        "split_rate_boundary": r"\bsplit\s+due\s+to\s+charge\s+rate\s+boundary\b",
-        "engineer_comments": r"\bengineer\s+comments\b",
-        "time_charge_row": r"\btime\s+charge\s*\(",
-    }
-
-    contract_map = {
-        "covering_period": r"^\s*covering\b",
-        "annual_contract_value": r"\bannual\s+contract\s+value\b",
-        "annual_fee": r"\bannual\s+fee\b",
-        "per_unit_per_month": r"\bper\s+unit\s+per\s+month\b",
-        "contract_energy_management": r"\bcontract\s+energy\s+management\b",
-        "response_maintenance": r"\bresponse\s+maintenance\s+services\b",
-        "ppm": r"\bplanned\s+preventative\s+maintenance\b",
-        "billing_services": r"\bmanagement,\s*data\s*&\s*credit\s+billing\s+services\b",
-        "site_line": r"\bsite\s*-\s*",
-    }
-
-    for name, pat in primary_map.items():
-        if re.search(pat, text, re.I | re.M):
-            flags.append(name)
-
-    for name, pat in support_map.items():
-        if re.search(pat, text, re.I | re.M):
-            flags.append(name)
-
-    for name, pat in contract_map.items():
-        if re.search(pat, text, re.I | re.M):
-            flags.append(name)
-
-    return sorted(flags)
-
-def classify_detail_subtype(detail_text: str) -> str:
-    lines = [ln.strip() for ln in (detail_text or "").splitlines() if ln.strip()]
-    if not lines: return "generic_detail"
-    
-    # Focus on the first 8 lines
-    head = "\n".join(lines[:8]).lower()
-
-    is_fuel = any(re.search(p, head) for p in RegexPatterns.FUEL_MARKERS)
-    is_plant_primary = any(re.search(p, head) for p in RegexPatterns.PLANT_PRIMARY_MARKERS)
-    is_plant_secondary = any(re.search(p, head) for p in RegexPatterns.PLANT_SECONDARY_MARKERS)
-    is_pipework = any(re.search(p, head) for p in RegexPatterns.PIPEWORK_MARKERS)
-    is_flat = any(re.search(p, head) for p in RegexPatterns.FLAT_MARKERS)
-
-    is_service_visit = any(trigger in head for trigger in [
-        "job number", "domestic visit", "initial call type", "repair", "insurance work"
-    ])
-
-    # --- CLASSIFICATION HIERARCHY ---
-    
-    # 1. FUEL
-    if is_fuel: return "fuel_delivery_detail"
-
-    # 2. PRIMARY PLANT (Energy Centre, Boiler, Plant Room explicitly stated)
-    if is_plant_primary: return "job_sheet_plant_detail"
-
-    # 3. PIPEWORK (Mapress, Carbon Pipe)
-    if is_pipework: return "job_sheet_pipework_detail"
-
-    # 4. FLAT / DOMESTIC
-    # Because Flat is above Secondary Plant, a "valve" or "pump" in a flat 
-    # gets safely captured here!
-    if is_flat or "domestic" in head: return "job_sheet_flat_detail"
-
-    # 5. SECONDARY PLANT (Pumps, Valves, Actuators with NO flat mentioned)
-    if is_plant_secondary: return "job_sheet_plant_detail"
-        
-    # 6. GENERIC SERVICE
-    if is_service_visit: return "job_sheet_generic_detail"
-
-    # 7. CONTRACTS
-    if any(re.search(p, head) for p in RegexPatterns.CONTRACT_SUMMARY_MARKERS):
-        return "contract_summary_detail"
-
-    return "generic_detail"
 
 # =============================================================================
 # 5. EXECUTION & REPORTING
@@ -729,27 +574,13 @@ def process_pdf(pdf_path_str: str):
 
     try:
         parsed = extract_and_parse(pdf)
-        doc_type = detect_document_type(
-            parsed.get("lines_ref", []),
-            parsed.get("credit_number"),
-            parsed.get("invoice_number")
-        )
-
-        detail_subtype = classify_detail_subtype(parsed.get("detail", ""))
-
-        # FIX: We completely strip doc_type and doc_flags from the signature.
-        # Now, if an invoice and a credit note both hit "job_sheet_plant_detail", 
-        # they will be grouped into the exact same layout number!
-        layout_sig = f"layout_type={detail_subtype}"
+        doc_type = detect_document_type(parsed.get("lines_ref", []), parsed.get("credit_number"), parsed.get("invoice_number"))
+        layout_sig = f"doc={doc_type} | flags={','.join(anchor_flags(parsed.get('lines_ref', [])))}"
 
         base_row = {
-            "layout_signature": layout_sig,
-            "file": rel_path,
-            "document_type": doc_type,
-            "invoice_date": parsed.get("invoice_date", ""),
-            "invoice_number": parsed.get("invoice_number", ""),
-            "credit_number": parsed.get("credit_number", ""),
-            "invoice_amount": parsed.get("invoice_amount", ""),
+            "layout_signature": layout_sig, "file": rel_path, "document_type": doc_type,
+            "invoice_date": parsed.get("invoice_date", ""), "invoice_number": parsed.get("invoice_number", ""),
+            "credit_number": parsed.get("credit_number", ""), "invoice_amount": parsed.get("invoice_amount", ""),
             "detail": parsed.get("detail", ""),
         }
 
@@ -758,36 +589,18 @@ def process_pdf(pdf_path_str: str):
         rows = []
 
         if not line_items:
-            rows.append({
-                **base_row,
-                "line_description": "",
-                "line_amount": "",
-                "vat_amount": "",
-                "line_total": ""
-            })
+            rows.append({**base_row, "line_description": "", "line_amount": "", "vat_amount": "", "line_total": ""})
             missing_fields.extend(["line_description", "line_amount"])
         else:
             for item in line_items:
-                row = {
-                    **base_row,
-                    "line_description": item["line_description"],
-                    "line_amount": item["line_amount"],
-                    "vat_amount": "",
-                    "line_total": ""
-                }
+                row = {**base_row, "line_description": item["line_description"], "line_amount": item["line_amount"], "vat_amount": "", "line_total": ""}
                 try:
                     amt_float = float(item["line_amount"])
-                    row.update({
-                        "line_amount": f"{amt_float:.2f}",
-                        "vat_amount": f"{amt_float * 0.20:.2f}",
-                        "line_total": f"{amt_float * 1.20:.2f}"
-                    })
-                except ValueError:
-                    pass
+                    row.update({"line_amount": f"{amt_float:.2f}", "vat_amount": f"{amt_float * 0.20:.2f}", "line_total": f"{amt_float * 1.20:.2f}"})
+                except ValueError: pass
                 rows.append(row)
 
         return {"pdf": rel_path, "rows": rows, "error": None, "missing_fields": missing_fields}
-
     except Exception as e:
         return {"pdf": rel_path, "rows": [], "error": str(e), "missing_fields": []}
 
@@ -824,142 +637,16 @@ def generate_dashboard_html(df: pd.DataFrame):
         f.write(f"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Invoice Extraction Dashboard</title><link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css"><style>body{{font-family:'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding:20px; background-color:#f8f9fa;}} .container{{background-color:white; padding:20px; border-radius:8px; box-shadow:0 2px 4px rgba(0,0,0,0.1); overflow-x:auto;}} h2{{color:#333;}} a{{color:#0066cc; text-decoration:none; font-weight:500;}} a:hover{{text-decoration:underline;}} td{{vertical-align:top; line-height:1.4;}} thead input, thead select{{width:100%; box-sizing:border-box; padding:4px; border:1px solid #ccc; border-radius:4px; font-weight:normal;}} .filters th{{padding:8px 4px !important; background-color:#f1f1f1;}} table.dataTable.display tbody tr.odd > .sorting_1, table.dataTable.display tbody tr.even > .sorting_1, table.dataTable.display tbody tr.odd, table.dataTable.display tbody tr.even{{background-color:transparent !important;}} table.dataTable tbody tr.file-group-0 td, table.dataTable.display tbody tr.file-group-0 td.sorting_1{{background-color:#ffffff !important;}} table.dataTable tbody tr.file-group-1 td, table.dataTable.display tbody tr.file-group-1 td.sorting_1{{background-color:#f2f7fb !important;}}</style></head><body><div class="container"><h2>Invoice Extraction Dashboard</h2>{table_html}</div><script src="https://code.jquery.com/jquery-3.7.0.min.js"></script><script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script><script>$(document).ready(function(){{ $('#invoiceTable thead tr').clone(true).addClass('filters').appendTo('#invoiceTable thead'); $.fn.dataTable.ext.search.push(function(settings, data, dataIndex) {{ var dateSearch = $('#dateSearchInput').val(); if (!dateSearch) return true; var rowDateRaw = data[3] || ""; var rowDateIso = ""; var ukMatch = rowDateRaw.match(/^(\\d{{1,2}})[\\/\\.\\-](\\d{{1,2}})[\\/\\.\\-](\\d{{2,4}})/); if (ukMatch) {{ var d = ukMatch[1].padStart(2, '0'); var m = ukMatch[2].padStart(2, '0'); var y = ukMatch[3].length === 2 ? "20" + ukMatch[3] : ukMatch[3]; rowDateIso = y + "-" + m + "-" + d; }} else {{ var dObj = new Date(rowDateRaw); if (!isNaN(dObj)) {{ rowDateIso = dObj.getFullYear() + "-" + String(dObj.getMonth() + 1).padStart(2, '0') + "-" + String(dObj.getDate()).padStart(2, '0'); }} }} return rowDateIso === dateSearch; }}); var table = $('#invoiceTable').DataTable({{ "pageLength": 50, "lengthChange": false, "orderCellsTop": true, "order": [[ 0, "asc" ]], "drawCallback": function (settings) {{ var api = this.api(); var lastFile = null; var groupToggle = 0; api.rows({{page:'current'}}).every(function(rowIdx) {{ var rowData = api.row(rowIdx).data(); var fileData = rowData[1] ? rowData[1].replace(/(<([^>]+)>)/gi, "").trim() : ""; if (fileData !== lastFile) {{ groupToggle = 1 - groupToggle; lastFile = fileData; }} $(this.node()).removeClass('file-group-0 file-group-1').addClass('file-group-' + groupToggle); }}); function applySmartMerge(colIndex) {{ var lastData = null; var lastCell = null; var lastFile = null; api.rows({{page:'current'}}).every(function(rowIdx) {{ var rowData = api.row(rowIdx).data(); var cell = api.cell(rowIdx, colIndex).node(); var fileData = rowData[1] ? rowData[1].replace(/(<([^>]+)>)/gi, "").trim() : ""; var rawCell = rowData[colIndex] || ""; var cellData = String(rawCell).trim(); if (cellData === lastData && fileData === lastFile && cellData !== "") {{ $(cell).empty().css('border-top', 'none'); if (lastCell) $(lastCell).css('border-bottom', 'none'); }} else {{ $(cell).html(rawCell).css('border-top', '').css('border-bottom', ''); lastData = cellData; lastFile = fileData; lastCell = cell; }} }}); }} for (var i = 0; i <= 7; i++) {{ applySmartMerge(i); }} }}, initComplete: function () {{ var api = this.api(); api.columns().eq(0).each(function (colIdx) {{ var cell = $('.filters th').eq($(api.column(colIdx).header()).index()); var title = $(cell).text(); if (title === 'invoice_date') {{ $(cell).html('<input type="date" id="dateSearchInput" />'); $('#dateSearchInput').on('change clear', function() {{ table.draw(); }}); }} else if (title === 'layout' || title === 'document_type') {{ var select = $('<select><option value="">All</option></select>').appendTo($(cell).empty()).on('change', function () {{ var val = $.fn.dataTable.util.escapeRegex($(this).val()); api.column(colIdx).search(val ? '^' + val + '$' : '', true, false).draw(); }}); api.column(colIdx).data().unique().sort().each(function (d) {{ var cleanData = d.replace(/(<([^>]+)>)/gi, "").trim(); if (cleanData) select.append('<option value="' + cleanData + '">' + cleanData + '</option>'); }}); }} else {{ $(cell).html('<input type="text" placeholder="Filter ' + title + '" />'); $('input', cell).on('keyup change clear', function () {{ if (api.column(colIdx).search() !== this.value) {{ api.column(colIdx).search(this.value).draw(); }} }}); }} }}); }} }}); }}); </script></body></html>""")
     print(f"Interactive dashboard saved to {Config.OUTPUT_HTML}")
 
-def is_copy_filename(path_str: str) -> bool:
-    name = Path(path_str).name.lower()
-    return "copy of" in name
-
-def duplicate_keep_priority(path_str: str):
-    name = Path(path_str).name.lower()
-    parent_depth = len(Path(path_str).parts)
-    return (
-        1 if "copy of" in name else 0,   # prefer non-"Copy of"
-        parent_depth,                    # then shorter path
-        len(name),                       # then shorter filename
-        name                             # then lexical
-    )
-
-def choose_preferred_invoice_file(existing_path: str, candidate_path: str) -> str:
-    ranked = sorted([existing_path, candidate_path], key=duplicate_keep_priority)
-    return ranked[0]
-
 def create_exceptions_report(dup_names, dup_invs, errs, missing, mismatches):
-    def render_rows(rows, headers, row_builder):
-        if not rows:
-            return "<p>None.</p>"
-        head = "".join(f"<th>{escape(str(h))}</th>" for h in headers)
-        body = "".join(row_builder(r) for r in rows)
-        return f"<table><tr>{head}</tr>{body}</table>"
-
-    duplicate_name_rows = [
-        {
-            "key": info["key"],
-            "kept": info["kept"],
-            "discarded": info["discarded"],
-            "discard_count": len(info["discarded"]),
-        }
-        for _, info in sorted(dup_names.items(), key=lambda kv: kv[0].lower())
-    ]
-
-    duplicate_invoice_rows = [
-        {
-            "key": info["key"],
-            "kept": info["kept"],
-            "discarded": info["discarded"],
-            "discard_count": len(info["discarded"]),
-        }
-        for _, info in sorted(dup_invs.items(), key=lambda kv: kv[0].lower())
-    ]
-
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>Extraction Exceptions</title>
-<style>
-body{{font-family:Arial,sans-serif; margin:20px; background:#f7f7f7; color:#222;}}
-.section{{background:#fff; padding:16px; margin-bottom:32px; border-radius:8px; box-shadow:0 1px 3px rgba(0,0,0,0.08);}}
-table{{width:100%; border-collapse:collapse; margin-top:16px;}}
-th,td{{border:1px solid #ddd; padding:8px; text-align:left; vertical-align:top;}}
-th{{background:#f0f0f0;}}
-.summary-card{{background:#fafafa; border:1px solid #ddd; padding:16px; display:inline-block; margin:5px; min-width:180px;}}
-</style>
-</head>
-<body>
-<h1>Extraction Exceptions Report</h1>
-"""
-
-    html += (
-        f"<div class='section'><h2>Summary</h2>"
-        f"<div class='summary-card'>Duplicates (Files): {len(dup_names)}</div>"
-        f"<div class='summary-card'>Duplicates (Invoices): {len(dup_invs)}</div>"
-        f"<div class='summary-card'>Errors: {len(errs)}</div>"
-        f"<div class='summary-card'>Missing Data: {len(missing)}</div>"
-        f"<div class='summary-card'>Mismatches: {len(mismatches)}</div>"
-        f"</div>"
-    )
-
-    html += "<div class='section'><h2>Duplicate Filenames</h2>"
-    html += render_rows(
-        duplicate_name_rows,
-        ["Filename Key", "Kept File", "Discarded Files", "Discard Count"],
-        lambda x: (
-            "<tr>"
-            f"<td>{escape(x['key'])}</td>"
-            f"<td>{escape(x['kept'])}</td>"
-            f"<td>{''.join(f'<div>{escape(v)}</div>' for v in x['discarded']) if x['discarded'] else ''}</td>"
-            f"<td>{x['discard_count']}</td>"
-            "</tr>"
-        ),
-    )
-    html += "</div>"
-
-    html += "<div class='section'><h2>Duplicate Invoice Keys</h2>"
-    html += render_rows(
-        duplicate_invoice_rows,
-        ["Invoice Key", "Kept File", "Discarded Files", "Discard Count"],
-        lambda x: (
-            "<tr>"
-            f"<td>{escape(x['key'])}</td>"
-            f"<td>{escape(x['kept'])}</td>"
-            f"<td>{''.join(f'<div>{escape(v)}</div>' for v in x['discarded']) if x['discarded'] else ''}</td>"
-            f"<td>{x['discard_count']}</td>"
-            "</tr>"
-        ),
-    )
-    html += "</div>"
-
-    html += "<div class='section'><h2>Errors</h2>"
-    html += render_rows(
-        errs,
-        ["File", "Error"],
-        lambda x: f"<tr><td>{escape(x['pdf'])}</td><td>{escape(x['error'])}</td></tr>"
-    )
-    html += "</div>"
-
-    html += "<div class='section'><h2>Missing Data</h2>"
-    html += render_rows(
-        missing,
-        ["File", "Missing"],
-        lambda x: f"<tr><td>{escape(x['pdf'])}</td><td>{escape(', '.join(x['missing']))}</td></tr>"
-    )
-    html += "</div>"
-
-    html += "<div class='section'><h2>Mismatches</h2>"
-    html += render_rows(
-        mismatches,
-        ["File", "Invoice Amt", "Calc Total", "Diff"],
-        lambda x: (
-            f"<tr><td>{escape(x['pdf'])}</td>"
-            f"<td>{escape(x['invoice_amount'])}</td>"
-            f"<td>{escape(x['calculated_total'])}</td>"
-            f"<td>{escape(x['difference'])}</td></tr>"
-        )
-    )
-    html += "</div></body></html>"
-
-    with open(Config.EXCEPTIONS_HTML, "w", encoding="utf-8") as f:
-        f.write(html)
-
+    html = f"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Extraction Exceptions</title><style>body{{font-family:Arial,sans-serif; margin:20px; background:#f7f7f7;}} .section{{background:#fff; padding:16px; margin-bottom:32px; border-radius:8px;}} table{{width:100%; border-collapse:collapse; margin-top:16px;}} th,td{{border:1px solid #ddd; padding:8px; text-align:left;}} th{{background:#f0f0f0;}} .summary-card{{background:#fafafa; border:1px solid #ddd; padding:16px; display:inline-block; margin:5px;}}</style></head><body><h1>Extraction Exceptions Report</h1>"""
+    
+    html += f"<div class='section'><h2>Summary</h2><div class='summary-card'>Duplicates (Files): {len(dup_names)}</div><div class='summary-card'>Duplicates (Invoices): {len(dup_invs)}</div><div class='summary-card'>Errors: {len(errs)}</div><div class='summary-card'>Missing Data: {len(missing)}</div><div class='summary-card'>Mismatches: {len(mismatches)}</div></div>"
+    
+    html += "<div class='section'><h2>Errors</h2><table><tr><th>File</th><th>Error</th></tr>" + "".join(f"<tr><td>{x['pdf']}</td><td>{x['error']}</td></tr>" for x in errs) + "</table></div>"
+    html += "<div class='section'><h2>Missing Data</h2><table><tr><th>File</th><th>Missing</th></tr>" + "".join(f"<tr><td>{x['pdf']}</td><td>{', '.join(x['missing'])}</td></tr>" for x in missing) + "</table></div>"
+    html += "<div class='section'><h2>Mismatches</h2><table><tr><th>File</th><th>Invoice Amt</th><th>Calc Total</th><th>Diff</th></tr>" + "".join(f"<tr><td>{x['pdf']}</td><td>{x['invoice_amount']}</td><td>{x['calculated_total']}</td><td>{x['difference']}</td></tr>" for x in mismatches) + "</table></div></body></html>"
+    
+    with open(Config.EXCEPTIONS_HTML, "w", encoding="utf-8") as f: f.write(html)
     print(f"Exceptions report saved to {Config.EXCEPTIONS_HTML}")
 
 
@@ -979,86 +666,6 @@ def deduplicate_inputs(pdfs):
         seen_filenames[pdf.name] = rel_path
         unique_pdfs.append(pdf)
     return unique_pdfs, dup_names
-
-def generate_excel_with_merges(df: pd.DataFrame):
-    export_cols = [
-        "layout", "file", "document_type", "invoice_date", "invoice_number",
-        "credit_number", "invoice_amount", "detail",
-        "line_description", "line_amount", "vat_amount", "line_total"
-    ]
-
-    xdf = df[export_cols].copy()
-
-    with pd.ExcelWriter(Config.OUTPUT_XLSX, engine="openpyxl") as writer:
-        xdf.to_excel(writer, index=False, sheet_name="Invoice Extraction")
-
-        wb = writer.book
-        ws = wb["Invoice Extraction"]
-
-        header_font = Font(bold=True)
-        align_top = Alignment(vertical="top", wrap_text=True)
-        align_center = Alignment(vertical="center", wrap_text=True)
-
-        for cell in ws[1]:
-            cell.font = header_font
-            cell.alignment = align_center
-
-        ws.freeze_panes = "A2"
-        ws.auto_filter.ref = ws.dimensions
-
-        widths = {
-            1: 10,   # layout
-            2: 32,   # file
-            3: 18,   # document_type
-            4: 14,   # invoice_date
-            5: 18,   # invoice_number
-            6: 18,   # credit_number
-            7: 14,   # invoice_amount
-            8: 75,   # detail
-            9: 75,   # line_description
-            10: 14,  # line_amount
-            11: 14,  # vat_amount
-            12: 14,  # line_total
-        }
-
-        for col_idx, width in widths.items():
-            ws.column_dimensions[get_column_letter(col_idx)].width = width
-
-        merge_cols = list(range(1, 9))  # A:H
-        current_start = 2
-
-        def get_file_value(row_num):
-            return ws.cell(row=row_num, column=2).value
-
-        for row_num in range(2, ws.max_row + 2):
-            current_file = get_file_value(current_start)
-            next_file = get_file_value(row_num) if row_num <= ws.max_row else None
-
-            if row_num > ws.max_row or next_file != current_file:
-                end_row = row_num - 1
-
-                if current_file and end_row > current_start:
-                    for col in merge_cols:
-                        ws.merge_cells(
-                            start_row=current_start,
-                            start_column=col,
-                            end_row=end_row,
-                            end_column=col
-                        )
-                        ws.cell(current_start, col).alignment = align_center
-                else:
-                    for col in merge_cols:
-                        ws.cell(current_start, col).alignment = align_top
-
-                current_start = row_num
-
-        for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
-            for cell in row:
-                if cell.column in (8, 9):
-                    cell.alignment = align_top
-                elif cell.row != 1:
-                    if cell.coordinate not in ws.merged_cells:
-                        cell.alignment = align_center
 
 def main():
     pdfs = sorted(Config.BASE_DIR.rglob("*.pdf"))
@@ -1084,42 +691,16 @@ def main():
                 continue
 
             first_row = result["rows"][0]
-            invoice_key = (
-                (first_row.get("document_type") or "").strip().lower(),
-                (first_row.get("invoice_number") or "").strip().upper(),
-                (first_row.get("invoice_amount") or "").strip(),
-            )
+            invoice_key = ((first_row.get("document_type") or "").strip().lower(), (first_row.get("invoice_number") or "").strip().upper(), (first_row.get("invoice_amount") or "").strip())
 
             if invoice_key[1] and invoice_key[2]:
-                group_key = f"{invoice_key[0]} | {invoice_key[1]} | {invoice_key[2]}"
-
                 if invoice_key in seen_invoice_keys:
-                    current_kept = seen_invoice_keys[invoice_key]
-                    candidate = result["pdf"]
-                    preferred = choose_preferred_invoice_file(current_kept, candidate)
-
+                    group_key = f"{invoice_key[0]} | {invoice_key[1]} | {invoice_key[2]}"
                     if group_key not in duplicate_invoice_groups:
-                        duplicate_invoice_groups[group_key] = {
-                            "key": group_key,
-                            "kept": current_kept,
-                            "discarded": []
-                        }
-
-                    if preferred == candidate:
-                        previous_kept = duplicate_invoice_groups[group_key]["kept"]
-                        if previous_kept not in duplicate_invoice_groups[group_key]["discarded"]:
-                            duplicate_invoice_groups[group_key]["discarded"].append(previous_kept)
-
-                        duplicate_invoice_groups[group_key]["kept"] = candidate
-                        seen_invoice_keys[invoice_key] = candidate
-                        print(f"Replaced kept duplicate invoice with preferred file: {candidate}")
-                        continue
-                    else:
-                        if candidate not in duplicate_invoice_groups[group_key]["discarded"]:
-                            duplicate_invoice_groups[group_key]["discarded"].append(candidate)
-                        print(f"Skipped duplicate invoice: {candidate}")
-                        continue
-
+                        duplicate_invoice_groups[group_key] = {"key": group_key, "kept": seen_invoice_keys[invoice_key], "discarded": []}
+                    duplicate_invoice_groups[group_key]["discarded"].append(result["pdf"])
+                    print(f"Skipped duplicate invoice: {result['pdf']}")
+                    continue
                 seen_invoice_keys[invoice_key] = result["pdf"]
 
             rows.extend(result["rows"])
@@ -1134,25 +715,17 @@ def main():
         order["layout"] = [str(i + 1) for i in range(len(order))]
         df = df.merge(order[["layout_signature", "layout"]], on="layout_signature", how="left")
 
-        # Sort and Format Final XLSX
-        final_cols = [
-            "layout", "file", "document_type", "invoice_date", "invoice_number",
-            "credit_number", "invoice_amount", "detail",
-            "line_description", "line_amount", "vat_amount", "line_total"
-        ]
-        df = df[final_cols].sort_values(["layout", "file"]).reset_index(drop=True)
-
-        generate_excel_with_merges(df)
-        print(f"\nExtraction complete! Excel workbook saved to {Config.OUTPUT_XLSX}")
+        # Sort and Format Final CSV
+        final_cols = ["layout", "file", "document_type", "invoice_date", "invoice_number", "credit_number", "invoice_amount", "detail", "line_description", "line_amount", "vat_amount", "line_total"]
+        df = df[final_cols].sort_values(["layout", "file"])
+        
+        csv_df = df.copy()
+        csv_df.loc[csv_df.duplicated(subset=["file"]), ["layout", "file", "document_type", "invoice_date", "invoice_number", "credit_number", "invoice_amount", "detail"]] = ""
+        csv_df.to_csv(Config.OUTPUT_FILE, index=False, encoding="utf-8-sig")
+        print(f"\nExtraction complete! CSV saved to {Config.OUTPUT_FILE}")
 
         generate_dashboard_html(df)
-        create_exceptions_report(
-            duplicate_filename_groups,
-            duplicate_invoice_groups,
-            error_files,
-            missing_data_files,
-            build_total_mismatch_files(df)
-        )
+        create_exceptions_report(duplicate_filename_groups, duplicate_invoice_groups, error_files, missing_data_files, build_total_mismatch_files(df))
     else:
         print("No rows extracted")
         create_exceptions_report(duplicate_filename_groups, duplicate_invoice_groups, error_files, missing_data_files, [])
