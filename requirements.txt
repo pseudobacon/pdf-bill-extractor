@@ -1,0 +1,9 @@
+# Python dependencies for the PDF bill extraction pipeline.
+# System binaries (Tesseract + Poppler) are NOT installed by pip —
+# see README.md or run: python setup_check.py
+pandas
+numpy
+pdfplumber
+pytesseract
+pdf2image
+openpyxl

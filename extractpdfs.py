@@ -20,6 +20,7 @@ import shutil
 from collections import defaultdict
 
 from excel_report import write_excel_report
+from ocr_deps import ensure_ocr_ready
 from html_report import generate_dashboard_html
 from exceptions_report import create_exceptions_report
 from report_common import (
@@ -827,6 +828,7 @@ def make_html_link(rel_to_output: str) -> str:
 # =============================================================================
 
 def main():
+    ensure_ocr_ready()
     clear_output_directory()
     ensure_output_dirs()
 

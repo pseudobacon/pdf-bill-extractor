@@ -8,6 +8,8 @@ import pdfplumber
 import pytesseract
 from pdf2image import convert_from_path
 
+from ocr_deps import ensure_ocr_ready
+
 
 BASE_DIR = Path(__file__).resolve().parent
 YEAR_FOLDERS = ["2019", "2021", "2022"]
@@ -1012,6 +1014,7 @@ def assign_layout_labels(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def main():
+    ensure_ocr_ready()
     pdfs = list_pdfs()
     if not pdfs:
         print("No PDFs found")
